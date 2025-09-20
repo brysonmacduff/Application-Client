@@ -1,1 +1,0 @@
-/usr/bin/c++ CMakeFiles/application_client_test.dir/application_client_test.cpp.o -o application_client_test  ../libapplication_client.a /usr/lib/x86_64-linux-gnu/libgtest_main.a /usr/lib/x86_64-linux-gnu/libgtest.a 

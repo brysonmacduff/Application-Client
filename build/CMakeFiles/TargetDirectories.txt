@@ -1,8 +1,0 @@
-/home/bryson/projects/c++/application-client/build/CMakeFiles/edit_cache.dir
-/home/bryson/projects/c++/application-client/build/CMakeFiles/rebuild_cache.dir
-/home/bryson/projects/c++/application-client/build/lib/CMakeFiles/application_client.dir
-/home/bryson/projects/c++/application-client/build/lib/CMakeFiles/edit_cache.dir
-/home/bryson/projects/c++/application-client/build/lib/CMakeFiles/rebuild_cache.dir
-/home/bryson/projects/c++/application-client/build/lib/test/CMakeFiles/application_client_test.dir
-/home/bryson/projects/c++/application-client/build/lib/test/CMakeFiles/edit_cache.dir
-/home/bryson/projects/c++/application-client/build/lib/test/CMakeFiles/rebuild_cache.dir
