@@ -85,7 +85,7 @@ private:
 
     Endpoint m_endpoint;
     ClientState m_client_state { ClientState::NOT_CONNECTED };
-    std::shared_mutex m_client_state_mutex;
+    mutable std::shared_mutex m_client_state_mutex;
     std::list<std::vector<char>> m_tx_queue;
     std::mutex m_tx_queue_mutex;
     ConnectedCallback m_connected_callback = [](){};
