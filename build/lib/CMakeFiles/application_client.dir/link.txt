@@ -1,0 +1,2 @@
+/usr/bin/ar qc libapplication_client.a CMakeFiles/application_client.dir/application_client.cpp.o
+/usr/bin/ranlib libapplication_client.a
