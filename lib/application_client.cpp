@@ -4,6 +4,8 @@ namespace InterProcessCommunication
 {
 ApplicationClient::~ApplicationClient()
 {
+    SignalTxWorkerThreadShutdown();
+    CloseSocket();
     JoinThreads();
 }
 
@@ -50,10 +52,12 @@ bool ApplicationClient::RequestOpen()
         return false;
     }
 
-    if(OpenConnection())
+    if(not OpenConnection())
     {
-        StartThreads();
+        return false;
     }
+
+    StartThreads();
 
     return true;
 }
@@ -100,6 +104,7 @@ void ApplicationClient::Clear()
 
 void ApplicationClient::StartThreads()
 {
+    SetTxWorkerThreadState(WorkerThreadState::STARTING);
 }
 
 void ApplicationClient::JoinThreads()
@@ -120,7 +125,25 @@ void ApplicationClient::JoinThreads()
     }
 }
 
-void ApplicationClient::ExecuteErrorCallback(const Error& error, const std::optional<std::vector<char>>& tx_payload_opt)
+void ApplicationClient::SetTxWorkerThreadState(const WorkerThreadState &worker_thread_state)
+{
+    std::shared_lock lock(m_process_tx_payloads_thread_state_mutex);
+    m_process_tx_payloads_thread_state = worker_thread_state;
+}
+
+ApplicationClient::WorkerThreadState ApplicationClient::GetTxWorkerThreadState() const
+{
+    std::shared_lock lock(m_process_tx_payloads_thread_state_mutex);
+    return m_process_tx_payloads_thread_state;
+}
+
+void ApplicationClient::SignalTxWorkerThreadShutdown()
+{
+    SetTxWorkerThreadState(WorkerThreadState::ENDING);
+    m_process_tx_payloads_semaphore.release();
+}
+
+void ApplicationClient::ExecuteErrorCallback(const Error &error, const std::optional<std::vector<char>> &tx_payload_opt)
 {
     std::lock_guard<std::mutex> lock(m_error_callback_mutex);
     m_error_callback(error, tx_payload_opt);
@@ -134,17 +157,20 @@ void ApplicationClient::SetClientState(const ClientState &client_state)
 
 bool ApplicationClient::OpenConnection()
 {
-    if(not OpenSocket())
+    bool result = false;
+
+    if(OpenSocket() && Connect())
     {
-        return false;
+        SetClientState(ClientState::CONNECTED);
+        result = true;
+    }
+    else
+    {
+        SetClientState(ClientState::NOT_CONNECTED);
+        result = false;
     }
 
-    if(not OpenConnection())
-    {
-        return false;
-    }
-
-    return true;
+    return result;
 }
 
 bool ApplicationClient::OpenSocket()
@@ -173,7 +199,7 @@ bool ApplicationClient::OpenTcpIpv4Socket()
 
     if(client_socket_fd < 0)
     {
-        const std::string error_message = std::string(CLASS_NAME) + "::" + __func__ + "() -> Failed to open socket! Error code: " + std::to_string(errno);
+        const std::string error_message = std::string(CLASS_NAME) + "::" + __func__ + "() -> Failed to open socket! Error code: {" + std::to_string(errno) +"}";
         perror(error_message.c_str());
         ExecuteErrorCallback(Error::SOCKET_OPEN_FAILURE,std::nullopt);
         return false;
@@ -191,7 +217,7 @@ bool ApplicationClient::OpenUnixDomainSocket()
 
     if(client_socket_fd < 0)
     {
-        const std::string error_message = std::string(CLASS_NAME) + "::" + __func__ + "() -> Failed to open socket! Error code: " + std::to_string(errno);
+        const std::string error_message = std::string(CLASS_NAME) + "::" + __func__ + "() -> Failed to open socket! Error code: {" + std::to_string(errno) +"}";
         perror(error_message.c_str());
         ExecuteErrorCallback(Error::SOCKET_OPEN_FAILURE,std::nullopt);
         return false;
@@ -261,6 +287,7 @@ bool ApplicationClient::ConnectToUnixDomainSocketAddress()
 void ApplicationClient::CloseSocket()
 {
     close(m_client_file_descriptor);
+    SetClientState(ClientState::NOT_CONNECTED);
     m_disconnected_callback();
 }
 
@@ -271,15 +298,17 @@ void ApplicationClient::MonitorConnection()
 
 void ApplicationClient::ProcessTxPayloads()
 {
-    while(GetClientState() != ClientState::CLOSING)
+    SetTxWorkerThreadState(WorkerThreadState::RUNNING);
+
+    while(GetTxWorkerThreadState() != WorkerThreadState::ENDING)
     {
         /* Wait here until signaled to resume: This happens in the following cases:
             1. The TX payload queue is no longer empty
-            2. The socket is being closed
+            2. This worker thread is being told to shut down
         */
         m_process_tx_payloads_semaphore.acquire();
 
-        if(GetClientState() == ClientState::CLOSING)
+        if(GetTxWorkerThreadState() == WorkerThreadState::ENDING)
         {
             break;
         }
@@ -291,6 +320,8 @@ void ApplicationClient::ProcessTxPayloads()
             SendNextPayload();
         }
     }
+
+    SetTxWorkerThreadState(WorkerThreadState::INACTIVE);
 }
 
 bool ApplicationClient::SendNextPayload()

@@ -81,10 +81,19 @@ private:
         std::string unix_socket_path = "/";
     };
 
+    enum class WorkerThreadState
+    {
+        STARTING,
+        RUNNING,
+        ENDING,
+        INACTIVE
+    };
+
     static constexpr size_t RX_BUFFER_SIZE = 1024;
 
     Endpoint m_endpoint;
     ClientState m_client_state { ClientState::NOT_CONNECTED };
+
     mutable std::shared_mutex m_client_state_mutex;
     std::list<std::vector<char>> m_tx_queue;
     std::mutex m_tx_queue_mutex;
@@ -97,9 +106,17 @@ private:
     int m_server_file_descriptor {-1};
 
     std::thread m_monitor_connection_thread;
+    std::thread m_process_rx_payloads_thread;
+    
     std::thread m_process_tx_payloads_thread;
     std::binary_semaphore m_process_tx_payloads_semaphore {0};
-    std::thread m_process_rx_payloads_thread;
+    WorkerThreadState m_process_tx_payloads_thread_state { WorkerThreadState::INACTIVE };
+    mutable std::shared_mutex m_process_tx_payloads_thread_state_mutex;
+    
+
+    void SetTxWorkerThreadState(const WorkerThreadState& worker_thread_state);
+    WorkerThreadState GetTxWorkerThreadState() const;
+    void SignalTxWorkerThreadShutdown();
 
     void ExecuteErrorCallback(const Error& error, const std::optional<std::vector<char>>& tx_payload_opt);
 
