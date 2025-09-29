@@ -12,9 +12,6 @@ public:
     const uint16_t PORT = 5000;
     ApplicationClient m_client {IPV4_ADDRESS, PORT};
 
-    void SetUp() override {
-    }
-
     void TearDown() override 
     {
         close(m_client_file_descriptor);
@@ -66,17 +63,20 @@ private:
     int m_server_file_descriptor { -1 };
 };
 
-TEST_F(TcpApplicationTest, OpenFailureDueToNoServer)
-{
-    EXPECT_FALSE(m_client.RequestOpen());
-}
-
 TEST_F(TcpApplicationTest, ConnectAndDisconnect)
 {
     const int connection_attempts = 1;
     std::binary_semaphore server_running_semaphore(0);
     std::binary_semaphore server_shutdown_semaphore(0);
     std::thread server_thread (&TcpApplicationTest::StartConnectionAccepterTcpServer, this, std::ref(server_running_semaphore), std::ref(server_shutdown_semaphore), connection_attempts);
+
+    EXPECT_TRUE(m_client.Start());
+
+    // Do not proceed until the client is ready to begin
+    while(not m_client.IsRunning())
+    {
+        std::this_thread::sleep_for(CLIENT_STATE_POLL_INTERVAL);
+    }
 
     // Wait here until the server signals it is ready
     server_running_semaphore.acquire();
@@ -117,6 +117,14 @@ TEST_F(TcpApplicationTest, ConnectAndDisconnectRepeatedly)
     std::binary_semaphore server_running_semaphore(0);
     std::binary_semaphore server_shutdown_semaphore(0);
     std::thread server_thread (&TcpApplicationTest::StartConnectionAccepterTcpServer, this, std::ref(server_running_semaphore), std::ref(server_shutdown_semaphore), connection_attempts);
+
+    EXPECT_TRUE(m_client.Start());
+
+    // Do not proceed until the client is ready to begin
+    while(not m_client.IsRunning())
+    {
+        std::this_thread::sleep_for(CLIENT_STATE_POLL_INTERVAL);
+    }
 
     // Wait here until the server signals it is ready
     server_running_semaphore.acquire();

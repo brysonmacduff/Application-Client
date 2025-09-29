@@ -56,11 +56,22 @@ public:
     void SetRxCallback(RxCallback callback);
     void SetErrorCallback(ErrorCallback callback);
 
+    /*
+        \brief This function starts the worker threads that are responsible for:
+            1. Managing a TCP client connection
+            2. Sending messages
+            3. Receiving messages
+    */
+    bool Start();
+    /*
+        \brief This function reports whether all of the worker threads are running and ready to do work
+    */
+    bool IsRunning() const;
     ClientState GetClientState() const;
     bool RequestOpen();
     bool RequestClose();
     bool EnqueuePayload(const std::span<char>& tx_bytes);
-    void Clear();
+    void ClearOutboundPayloads();
 
 private:
 
@@ -105,14 +116,23 @@ private:
     int m_client_file_descriptor {-1};
     int m_server_file_descriptor {-1};
 
+    bool m_worker_threads_started { false };
+
     std::thread m_monitor_connection_thread;
+    std::binary_semaphore m_monitor_connection_semaphore {0};
+    WorkerThreadState m_monitor_connection_thread_state { WorkerThreadState::INACTIVE };
+    mutable std::shared_mutex m_monitor_connection_thread_state_mutex;
+
     std::thread m_process_rx_payloads_thread;
     
     std::thread m_process_tx_payloads_thread;
     std::binary_semaphore m_process_tx_payloads_semaphore {0};
     WorkerThreadState m_process_tx_payloads_thread_state { WorkerThreadState::INACTIVE };
     mutable std::shared_mutex m_process_tx_payloads_thread_state_mutex;
-    
+
+    void SetMonitorWorkerThreadState(const WorkerThreadState& worker_thread_state);
+    WorkerThreadState GetMonitorWorkerThreadState() const;
+    void SignalMonitorWorkerThreadShutdown();
 
     void SetTxWorkerThreadState(const WorkerThreadState& worker_thread_state);
     WorkerThreadState GetTxWorkerThreadState() const;
@@ -135,7 +155,6 @@ private:
     void ProcessTxPayloads();
     void ProcessRxPayloads();
 
-    void StartThreads();
     void JoinThreads();
 
     bool SendNextPayload();

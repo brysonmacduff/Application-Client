@@ -5,6 +5,7 @@ namespace InterProcessCommunication
 ApplicationClient::~ApplicationClient()
 {
     SignalTxWorkerThreadShutdown();
+    SignalMonitorWorkerThreadShutdown();
     CloseSocket();
     JoinThreads();
 }
@@ -39,6 +40,26 @@ void ApplicationClient::SetErrorCallback(ErrorCallback callback)
     m_error_callback = std::move(callback);
 }
 
+bool ApplicationClient::Start()
+{
+    if(m_worker_threads_started)
+    {
+        return false;
+    }
+
+    SetMonitorWorkerThreadState(WorkerThreadState::STARTING);
+
+    m_monitor_connection_thread = std::thread(&ApplicationClient::MonitorConnection, this);
+
+    m_worker_threads_started = true;
+    return m_worker_threads_started;
+}
+
+bool ApplicationClient::IsRunning() const
+{
+    return m_monitor_connection_thread_state == WorkerThreadState::RUNNING;
+}
+
 ClientState ApplicationClient::GetClientState() const
 {
     std::shared_lock lock(m_client_state_mutex);
@@ -52,12 +73,10 @@ bool ApplicationClient::RequestOpen()
         return false;
     }
 
-    if(not OpenConnection())
-    {
-        return false;
-    }
+    SetClientState(ClientState::OPENING);
 
-    StartThreads();
+    // Signal the connection monitor to open a connection
+    m_monitor_connection_semaphore.release();
 
     return true;
 }
@@ -71,10 +90,8 @@ bool ApplicationClient::RequestClose()
 
     SetClientState(ClientState::CLOSING);
 
-    CloseSocket();
-
-    // Signal the TX payload sender worker thread to wake up
-    m_process_tx_payloads_semaphore.release();
+    // Signal the connection monitor thread to close the socket
+    m_monitor_connection_semaphore.release();
 
     return true;
 }
@@ -96,15 +113,10 @@ bool ApplicationClient::EnqueuePayload(const std::span<char>& tx_bytes)
     return true;
 }
 
-void ApplicationClient::Clear()
+void ApplicationClient::ClearOutboundPayloads()
 {
     std::lock_guard<std::mutex> lock(m_tx_queue_mutex);
     m_tx_queue.clear();
-}
-
-void ApplicationClient::StartThreads()
-{
-    SetTxWorkerThreadState(WorkerThreadState::STARTING);
 }
 
 void ApplicationClient::JoinThreads()
@@ -123,6 +135,26 @@ void ApplicationClient::JoinThreads()
     {
         m_process_tx_payloads_thread.join();
     }
+
+    m_worker_threads_started = false;
+}
+
+void ApplicationClient::SetMonitorWorkerThreadState(const WorkerThreadState &worker_thread_state)
+{
+    std::shared_lock lock(m_monitor_connection_thread_state_mutex);
+    m_monitor_connection_thread_state = worker_thread_state;
+}
+
+ApplicationClient::WorkerThreadState ApplicationClient::GetMonitorWorkerThreadState() const
+{
+    std::shared_lock lock(m_monitor_connection_thread_state_mutex);
+    return m_monitor_connection_thread_state;
+}
+
+void ApplicationClient::SignalMonitorWorkerThreadShutdown()
+{
+    SetMonitorWorkerThreadState(WorkerThreadState::ENDING);
+    m_monitor_connection_semaphore.release();
 }
 
 void ApplicationClient::SetTxWorkerThreadState(const WorkerThreadState &worker_thread_state)
@@ -157,20 +189,14 @@ void ApplicationClient::SetClientState(const ClientState &client_state)
 
 bool ApplicationClient::OpenConnection()
 {
-    bool result = false;
-
     if(OpenSocket() && Connect())
     {
         SetClientState(ClientState::CONNECTED);
-        result = true;
-    }
-    else
-    {
-        SetClientState(ClientState::NOT_CONNECTED);
-        result = false;
+        m_connected_callback();
+        return true;
     }
 
-    return result;
+    return false;
 }
 
 bool ApplicationClient::OpenSocket()
@@ -293,7 +319,39 @@ void ApplicationClient::CloseSocket()
 
 void ApplicationClient::MonitorConnection()
 {
-    
+    SetMonitorWorkerThreadState(WorkerThreadState::RUNNING);
+
+    while(GetMonitorWorkerThreadState() != WorkerThreadState::ENDING)
+    {
+        /*
+            Wait here for the following events:
+                1. Open the socket and connect
+                2. Close the socket
+                3. The worker thread is being signaled to shutdown
+        */
+        m_monitor_connection_semaphore.acquire();
+
+        if(GetMonitorWorkerThreadState() == WorkerThreadState::ENDING)
+        {
+            break;
+        }
+
+        if(GetClientState() == ClientState::OPENING)
+        {
+            // If the connection is succesful then the client state will transition to CONNECTED, which happens inside OpenConnection()
+            if(not OpenConnection())
+            {
+                // If opening a connection fails, then close the file descriptor and transition back to the NOT_CONNECTED state, which happens inside CloseSocket()
+                CloseSocket();
+            }
+        }
+        else if(GetClientState() == ClientState::CLOSING)
+        {
+            CloseSocket();
+        }
+    }
+
+    SetMonitorWorkerThreadState(WorkerThreadState::INACTIVE);
 }
 
 void ApplicationClient::ProcessTxPayloads()
