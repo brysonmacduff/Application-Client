@@ -13,6 +13,7 @@
 #include <iostream>
 #include <cstring>
 #include <semaphore>
+#include <chrono>
 
 namespace InterProcessCommunication
 {
@@ -101,6 +102,8 @@ private:
     };
 
     static constexpr size_t RX_BUFFER_SIZE = 1024;
+    static constexpr std::chrono::milliseconds RX_CONNECTION_POLL_INTERVAL { 1 };
+    static constexpr int DEFAULT_FILE_DESCRIPTOR { -1 };
 
     Endpoint m_endpoint;
     ClientState m_client_state { ClientState::NOT_CONNECTED };
@@ -113,8 +116,7 @@ private:
     RxCallback m_rx_callback = [](const std::span<char>& rx_bytes){(void)rx_bytes;};
     ErrorCallback m_error_callback = [](const Error& error, const std::optional<std::vector<char>>& failed_tx_payload){(void)error; (void)failed_tx_payload;};
     std::mutex m_error_callback_mutex;
-    int m_client_file_descriptor {-1};
-    int m_server_file_descriptor {-1};
+    int m_client_file_descriptor { DEFAULT_FILE_DESCRIPTOR };
 
     bool m_worker_threads_started { false };
 
@@ -124,6 +126,8 @@ private:
     mutable std::shared_mutex m_monitor_connection_thread_state_mutex;
 
     std::thread m_process_rx_payloads_thread;
+    WorkerThreadState m_process_rx_payloads_thread_state { WorkerThreadState::INACTIVE };
+    mutable std::shared_mutex m_process_rx_payloads_thread_state_mutex;
     
     std::thread m_process_tx_payloads_thread;
     std::binary_semaphore m_process_tx_payloads_semaphore {0};
@@ -137,6 +141,10 @@ private:
     void SetTxWorkerThreadState(const WorkerThreadState& worker_thread_state);
     WorkerThreadState GetTxWorkerThreadState() const;
     void SignalTxWorkerThreadShutdown();
+
+    void SetRxWorkerThreadState(const WorkerThreadState& worker_thread_state);
+    WorkerThreadState GetRxWorkerThreadState() const;
+    void SignalRxWorkerThreadShutdown();
 
     void ExecuteErrorCallback(const Error& error, const std::optional<std::vector<char>>& tx_payload_opt);
 

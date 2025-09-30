@@ -4,9 +4,9 @@ namespace InterProcessCommunication
 {
 ApplicationClient::~ApplicationClient()
 {
+    SignalRxWorkerThreadShutdown();
     SignalTxWorkerThreadShutdown();
     SignalMonitorWorkerThreadShutdown();
-    CloseSocket();
     JoinThreads();
 }
 
@@ -48,10 +48,15 @@ bool ApplicationClient::Start()
     }
 
     SetMonitorWorkerThreadState(WorkerThreadState::STARTING);
+    SetTxWorkerThreadState(WorkerThreadState::STARTING);
+    SetRxWorkerThreadState(WorkerThreadState::STARTING);
 
     m_monitor_connection_thread = std::thread(&ApplicationClient::MonitorConnection, this);
+    m_process_tx_payloads_thread = std::thread(&ApplicationClient::ProcessTxPayloads, this);
+    m_process_rx_payloads_thread = std::thread(&ApplicationClient::ProcessRxPayloads, this);
 
     m_worker_threads_started = true;
+
     return m_worker_threads_started;
 }
 
@@ -173,6 +178,23 @@ void ApplicationClient::SignalTxWorkerThreadShutdown()
 {
     SetTxWorkerThreadState(WorkerThreadState::ENDING);
     m_process_tx_payloads_semaphore.release();
+}
+
+void ApplicationClient::SetRxWorkerThreadState(const WorkerThreadState &worker_thread_state)
+{
+    std::shared_lock lock(m_process_rx_payloads_thread_state_mutex);
+    m_process_rx_payloads_thread_state = worker_thread_state;
+}
+
+ApplicationClient::WorkerThreadState ApplicationClient::GetRxWorkerThreadState() const
+{
+    std::shared_lock lock(m_process_rx_payloads_thread_state_mutex);
+    return m_process_rx_payloads_thread_state;
+}
+
+void ApplicationClient::SignalRxWorkerThreadShutdown()
+{
+    SetRxWorkerThreadState(WorkerThreadState::ENDING);
 }
 
 void ApplicationClient::ExecuteErrorCallback(const Error &error, const std::optional<std::vector<char>> &tx_payload_opt)
@@ -312,6 +334,7 @@ bool ApplicationClient::ConnectToUnixDomainSocketAddress()
 
 void ApplicationClient::CloseSocket()
 {
+    shutdown(m_client_file_descriptor, SHUT_RDWR);
     close(m_client_file_descriptor);
     SetClientState(ClientState::NOT_CONNECTED);
     m_disconnected_callback();
@@ -350,6 +373,8 @@ void ApplicationClient::MonitorConnection()
             CloseSocket();
         }
     }
+
+    CloseSocket();
 
     SetMonitorWorkerThreadState(WorkerThreadState::INACTIVE);
 }
@@ -408,20 +433,30 @@ bool ApplicationClient::SendNextPayload()
 
 void ApplicationClient::ProcessRxPayloads()
 {
-    while(GetClientState() != ClientState::CLOSING)
+    SetRxWorkerThreadState(WorkerThreadState::RUNNING);
+
+    while(GetRxWorkerThreadState() != WorkerThreadState::ENDING)
     {
-        std::vector<char> rx_buffer(RX_BUFFER_SIZE);
-        std::span<char> rx_buffer_view(rx_buffer);
-
-        const ssize_t read_bytes = read(m_client_file_descriptor, rx_buffer_view.data(), rx_buffer_view.size());
-
-        if(read_bytes < 0)
+        if(GetClientState() != ClientState::CONNECTED)
         {
-            if(GetClientState() == ClientState::CLOSING)
+            if(GetRxWorkerThreadState() == WorkerThreadState::ENDING)
             {
                 break;
             }
 
+            // FIXME: Implement a non-polling alternative so that this thread is resumed upon a connection being established
+            std::this_thread::sleep_for(RX_CONNECTION_POLL_INTERVAL);
+
+            continue;
+        }
+
+        std::vector<char> rx_buffer(RX_BUFFER_SIZE);
+        std::span<char> rx_buffer_view(rx_buffer);
+
+        const ssize_t read_bytes = recv(m_client_file_descriptor, rx_buffer_view.data(), rx_buffer_view.size(),0);
+
+        if(read_bytes < 0)
+        {
             const std::string error_message = std::string(CLASS_NAME) + "::" + __func__ + "() -> Failed to read!";
             perror(error_message.c_str());
             ExecuteErrorCallback(Error::SOCKET_READ_FAILURE, std::nullopt);
@@ -431,6 +466,8 @@ void ApplicationClient::ProcessRxPayloads()
 
         m_rx_callback(rx_buffer_view);
     }
+
+    SetRxWorkerThreadState(WorkerThreadState::INACTIVE);
 }
 
 } // namespace InterProcessCommunication
