@@ -102,7 +102,7 @@ public:
 
             const std::string received_message (buffer_view.data(), bytes);
 
-            std::cout << "TCP_SERVER -> Received message: {"+received_message+"}\n";
+            //std::cout << "TCP_SERVER -> Received message: {"+received_message+"}\n";
 
             received_payload += received_message;
         }
@@ -335,6 +335,105 @@ TEST_F(TcpApplicationTest, SendMultipleMessages)
     server_shutdown_semaphore.release();
 
     server_thread.join();
+}
+
+TEST_F(TcpApplicationTest, FailSendingEmptyMessage)
+{   
+    std::string empty_message;
+    std::span<char> empty_message_view(empty_message);
+    EXPECT_FALSE(m_client.EnqueuePayload(empty_message_view));
+}
+
+TEST_F(TcpApplicationTest, SendLargeMessage)
+{
+    const size_t message_size = 8192;
+    std::string message (message_size,'x');
+
+    std::binary_semaphore server_running_semaphore(0);
+    std::binary_semaphore server_done_semaphore(0);
+    std::binary_semaphore server_shutdown_semaphore(0);
+    std::thread server_thread (&TcpApplicationTest::StartMessageReceiverTcpServer, this, std::ref(server_running_semaphore), std::ref(server_done_semaphore), std::ref(server_shutdown_semaphore), message);
+
+    EXPECT_TRUE(m_client.Start());
+
+    // Do not proceed until the client is ready to begin
+    while(not m_client.IsRunning())
+    {
+        std::this_thread::sleep_for(CLIENT_STATE_POLL_INTERVAL);
+    }
+
+    // Wait here until the server signals it is ready
+    server_running_semaphore.acquire();
+
+    EXPECT_TRUE(m_client.RequestOpen());
+
+    std::cout << __func__ << " -> Requested open!\n";
+
+    while(m_client.GetClientState() != ClientState::CONNECTED)
+    {
+        std::this_thread::sleep_for(CLIENT_STATE_POLL_INTERVAL);
+    }
+
+    EXPECT_EQ(m_client.GetClientState(), ClientState::CONNECTED);
+
+    const std::span<char> message_view (message);
+
+    EXPECT_TRUE(m_client.EnqueuePayload(message_view));
+
+    // wait for the server to signal that it is done reading
+    server_done_semaphore.acquire();
+
+    EXPECT_TRUE(m_client.RequestClose());
+
+    while(m_client.GetClientState() != ClientState::NOT_CONNECTED)
+    {
+        std::this_thread::sleep_for(CLIENT_STATE_POLL_INTERVAL);
+    }
+
+    EXPECT_EQ(m_client.GetClientState(), ClientState::NOT_CONNECTED);
+
+    server_shutdown_semaphore.release();
+
+    server_thread.join();
+}
+
+TEST_F(TcpApplicationTest, FailSendingMessageBeforeConnecting)
+{
+    std::string message = "hello there";
+
+    bool is_error_callback_activated = false;
+
+    m_client.SetErrorCallback([&](Error error, std::optional<std::vector<char>> failed_tx_payload)
+    {   
+        EXPECT_EQ(Error::SOCKET_SEND_FAILURE, error);
+        EXPECT_TRUE(failed_tx_payload.has_value());
+
+        const std::vector<char> failed_tx_payload_vec = failed_tx_payload.value();
+        const std::string failed_tx_payload_str(failed_tx_payload_vec.data(), failed_tx_payload_vec.size());
+
+        EXPECT_EQ(failed_tx_payload_str, message);
+
+        is_error_callback_activated = true;
+    });
+
+    EXPECT_TRUE(m_client.Start());
+
+    // Do not proceed until the client worker threads are ready to begin
+    while(not m_client.IsRunning())
+    {
+        std::this_thread::sleep_for(CLIENT_STATE_POLL_INTERVAL);
+    }
+
+    const std::span<char> message_view (message);
+
+    EXPECT_TRUE(m_client.EnqueuePayload(message_view));
+
+    // wait for the error callback to be activated
+
+    while(not is_error_callback_activated)
+    {
+        std::this_thread::sleep_for(CLIENT_STATE_POLL_INTERVAL);
+    }
 }
 
 } // namespace InterProcessCommunication::Test
