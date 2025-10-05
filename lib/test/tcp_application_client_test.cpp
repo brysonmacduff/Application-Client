@@ -247,8 +247,6 @@ TEST_F(TcpApplicationTest, SendSingleMessage)
 
     EXPECT_TRUE(m_client.RequestOpen());
 
-    std::cout << __func__ << " -> Requested open!\n";
-
     while(m_client.GetClientState() != ClientState::CONNECTED)
     {
         std::this_thread::sleep_for(CLIENT_STATE_POLL_INTERVAL);
@@ -366,8 +364,6 @@ TEST_F(TcpApplicationTest, SendLargeMessage)
     server_running_semaphore.acquire();
 
     EXPECT_TRUE(m_client.RequestOpen());
-
-    std::cout << __func__ << " -> Requested open!\n";
 
     while(m_client.GetClientState() != ClientState::CONNECTED)
     {
