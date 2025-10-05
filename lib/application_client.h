@@ -35,10 +35,10 @@ enum class Error
     SOCKET_CONNECT_FAILURE
 };
 
-using ErrorCallback = std::function<void(Error error, std::optional<std::vector<char>> failed_tx_payload)>;
+using ErrorCallback = std::function<void(const Error& error, const std::optional<std::span<char>>& failed_tx_payload)>;
 using ConnectedCallback = std::function<void()>;
-using DisconnectedCallback = std::function<void()>;
-using RxCallback = std::function<void(std::span<char> rx_bytes)>;
+using DisconnectedCallback = std::function<void(bool disconnected_by_server)>;
+using RxCallback = std::function<void(const std::span<char>& rx_bytes)>;
 
 class ApplicationClient
 {
@@ -112,9 +112,9 @@ private:
     std::list<std::vector<char>> m_tx_queue;
     std::mutex m_tx_queue_mutex;
     ConnectedCallback m_connected_callback = [](){};
-    DisconnectedCallback m_disconnected_callback = [](){};
-    RxCallback m_rx_callback = [](std::span<char> rx_bytes){(void)rx_bytes;};
-    ErrorCallback m_error_callback = [](Error error, std::optional<std::vector<char>> failed_tx_payload){(void)error; (void)failed_tx_payload;};
+    DisconnectedCallback m_disconnected_callback = [](bool disconnected_by_server){};
+    RxCallback m_rx_callback = [](const std::span<char>& rx_bytes){(void)rx_bytes;};
+    ErrorCallback m_error_callback = [](const Error& error, const std::optional<std::span<char>>& failed_tx_payload){(void)error; (void)failed_tx_payload;};
     std::mutex m_error_callback_mutex;
     int m_client_file_descriptor { DEFAULT_FILE_DESCRIPTOR };
 
@@ -146,7 +146,7 @@ private:
     WorkerThreadState GetRxWorkerThreadState() const;
     void SignalRxWorkerThreadShutdown();
 
-    void ExecuteErrorCallback(const Error& error, const std::optional<std::vector<char>>& tx_payload_opt);
+    void ExecuteErrorCallback(const Error& error, const std::optional<std::span<char>>& tx_payload_opt);
 
     void SetClientState(const ClientState& client_state);
     bool OpenConnection();

@@ -5,7 +5,7 @@
 namespace InterProcessCommunication::Test
 {
 
-class TcpApplicationTest : public ::testing::Test
+class TcpApplicationClientTest : public ::testing::Test
 {
 public:
     static constexpr std::chrono::milliseconds CLIENT_STATE_POLL_INTERVAL { 10 };
@@ -121,17 +121,65 @@ public:
         std::cout << "TCP_SERVER -> Server has shutdown.\n";
     }
 
+    void StartMessageSenderTcpServer(std::binary_semaphore& server_running_semaphore, std::binary_semaphore& server_shutdown_semaphore, std::string outbound_payload)
+    {
+        const int connection_limit = 1;
+        const int m_server_file_descriptor = socket(AF_INET, SOCK_STREAM, 0);
+        EXPECT_NE(m_server_file_descriptor, -1);
+        sockaddr_in address{};
+
+        // Force the port to be freed after use by the server
+        const int server_socket_option = 1;
+        setsockopt(m_server_file_descriptor, SOL_SOCKET, SO_REUSEADDR, &server_socket_option, sizeof(server_socket_option));
+  
+        address.sin_family = AF_INET;
+        inet_pton(AF_INET, IPV4_ADDRESS.c_str(), &address.sin_addr);
+        address.sin_port = htons(PORT);
+
+        EXPECT_NE(bind(m_server_file_descriptor, (sockaddr*)&address, sizeof(address)),-1);
+        EXPECT_NE(listen(m_server_file_descriptor, connection_limit),-1);
+
+        // Signal to the test case that the server is ready to accept a connection
+        server_running_semaphore.release();
+
+        std::cout << "TCP_SERVER -> Server is listening for connection attempts...\n";
+
+        const int m_client_file_descriptor = accept(m_server_file_descriptor, nullptr, nullptr);
+
+        EXPECT_NE(m_client_file_descriptor, -1);
+
+        std::cout << "TCP_SERVER -> Accepted client connection.\n";
+
+        ssize_t bytes_sent = 0;
+
+        while(bytes_sent < outbound_payload.size())
+        {
+            ssize_t remaining_bytes = outbound_payload.size() - bytes_sent;
+            bytes_sent += send(m_client_file_descriptor, outbound_payload.data() + bytes_sent, remaining_bytes, 0);
+
+            EXPECT_GT(bytes_sent, -1);
+        }
+
+        // Wait for the client to be done and signal the server
+        server_shutdown_semaphore.acquire();
+
+        close(m_client_file_descriptor);
+        close(m_server_file_descriptor);
+
+        std::cout << "TCP_SERVER -> Server has shutdown.\n";
+    }
+
 private:
     int m_client_file_descriptor { -1 };
     int m_server_file_descriptor { -1 };
 };
 
-TEST_F(TcpApplicationTest, ConnectAndDisconnect)
+TEST_F(TcpApplicationClientTest, ConnectAndDisconnect)
 {
     const int connection_attempts = 1;
     std::binary_semaphore server_running_semaphore(0);
     std::binary_semaphore server_shutdown_semaphore(0);
-    std::thread server_thread (&TcpApplicationTest::StartConnectionAccepterTcpServer, this, std::ref(server_running_semaphore), std::ref(server_shutdown_semaphore), connection_attempts);
+    std::thread server_thread (&TcpApplicationClientTest::StartConnectionAccepterTcpServer, this, std::ref(server_running_semaphore), std::ref(server_shutdown_semaphore), connection_attempts);
 
     EXPECT_TRUE(m_client.Start());
 
@@ -174,12 +222,12 @@ TEST_F(TcpApplicationTest, ConnectAndDisconnect)
     server_thread.join();
 }
 
-TEST_F(TcpApplicationTest, ConnectAndDisconnectRepeatedly)
+TEST_F(TcpApplicationClientTest, ConnectAndDisconnectRepeatedly)
 {
     const int connection_attempts = 3;
     std::binary_semaphore server_running_semaphore(0);
     std::binary_semaphore server_shutdown_semaphore(0);
-    std::thread server_thread (&TcpApplicationTest::StartConnectionAccepterTcpServer, this, std::ref(server_running_semaphore), std::ref(server_shutdown_semaphore), connection_attempts);
+    std::thread server_thread (&TcpApplicationClientTest::StartConnectionAccepterTcpServer, this, std::ref(server_running_semaphore), std::ref(server_shutdown_semaphore), connection_attempts);
 
     EXPECT_TRUE(m_client.Start());
 
@@ -225,14 +273,14 @@ TEST_F(TcpApplicationTest, ConnectAndDisconnectRepeatedly)
     server_thread.join();
 }
 
-TEST_F(TcpApplicationTest, SendSingleMessage)
+TEST_F(TcpApplicationClientTest, SendSingleMessage)
 {
     std::string message = "hello there";
 
     std::binary_semaphore server_running_semaphore(0);
     std::binary_semaphore server_done_semaphore(0);
     std::binary_semaphore server_shutdown_semaphore(0);
-    std::thread server_thread (&TcpApplicationTest::StartMessageReceiverTcpServer, this, std::ref(server_running_semaphore), std::ref(server_done_semaphore), std::ref(server_shutdown_semaphore), message);
+    std::thread server_thread (&TcpApplicationClientTest::StartMessageReceiverTcpServer, this, std::ref(server_running_semaphore), std::ref(server_done_semaphore), std::ref(server_shutdown_semaphore), message);
 
     EXPECT_TRUE(m_client.Start());
 
@@ -275,7 +323,7 @@ TEST_F(TcpApplicationTest, SendSingleMessage)
     server_thread.join();
 }
 
-TEST_F(TcpApplicationTest, SendMultipleMessages)
+TEST_F(TcpApplicationClientTest, SendMultipleMessages)
 {
     const size_t message_count = 100;
     std::vector<std::string> messages (message_count);
@@ -290,7 +338,7 @@ TEST_F(TcpApplicationTest, SendMultipleMessages)
     std::binary_semaphore server_running_semaphore(0);
     std::binary_semaphore server_done_semaphore(0);
     std::binary_semaphore server_shutdown_semaphore(0);
-    std::thread server_thread (&TcpApplicationTest::StartMessageReceiverTcpServer, this, std::ref(server_running_semaphore), std::ref(server_done_semaphore), std::ref(server_shutdown_semaphore), total_payload);
+    std::thread server_thread (&TcpApplicationClientTest::StartMessageReceiverTcpServer, this, std::ref(server_running_semaphore), std::ref(server_done_semaphore), std::ref(server_shutdown_semaphore), total_payload);
 
     EXPECT_TRUE(m_client.Start());
 
@@ -335,14 +383,14 @@ TEST_F(TcpApplicationTest, SendMultipleMessages)
     server_thread.join();
 }
 
-TEST_F(TcpApplicationTest, FailSendingEmptyMessage)
+TEST_F(TcpApplicationClientTest, FailSendingEmptyMessage)
 {   
     std::string empty_message;
     std::span<char> empty_message_view(empty_message);
     EXPECT_FALSE(m_client.EnqueuePayload(empty_message_view));
 }
 
-TEST_F(TcpApplicationTest, SendLargeMessage)
+TEST_F(TcpApplicationClientTest, SendLargeMessage)
 {
     const size_t message_size = 8192;
     std::string message (message_size,'x');
@@ -350,7 +398,7 @@ TEST_F(TcpApplicationTest, SendLargeMessage)
     std::binary_semaphore server_running_semaphore(0);
     std::binary_semaphore server_done_semaphore(0);
     std::binary_semaphore server_shutdown_semaphore(0);
-    std::thread server_thread (&TcpApplicationTest::StartMessageReceiverTcpServer, this, std::ref(server_running_semaphore), std::ref(server_done_semaphore), std::ref(server_shutdown_semaphore), message);
+    std::thread server_thread (&TcpApplicationClientTest::StartMessageReceiverTcpServer, this, std::ref(server_running_semaphore), std::ref(server_done_semaphore), std::ref(server_shutdown_semaphore), message);
 
     EXPECT_TRUE(m_client.Start());
 
@@ -393,18 +441,18 @@ TEST_F(TcpApplicationTest, SendLargeMessage)
     server_thread.join();
 }
 
-TEST_F(TcpApplicationTest, FailSendingMessageBeforeConnecting)
+TEST_F(TcpApplicationClientTest, FailSendingMessageBeforeConnecting)
 {
     std::string message = "hello there";
 
     bool is_error_callback_activated = false;
 
-    m_client.SetErrorCallback([&](Error error, std::optional<std::vector<char>> failed_tx_payload)
+    m_client.SetErrorCallback([&](const Error& error, const std::optional<std::span<char>>& failed_tx_payload)
     {   
         EXPECT_EQ(Error::SOCKET_SEND_FAILURE, error);
         EXPECT_TRUE(failed_tx_payload.has_value());
 
-        const std::vector<char> failed_tx_payload_vec = failed_tx_payload.value();
+        const std::span<char> failed_tx_payload_vec = failed_tx_payload.value();
         const std::string failed_tx_payload_str(failed_tx_payload_vec.data(), failed_tx_payload_vec.size());
 
         EXPECT_EQ(failed_tx_payload_str, message);
@@ -430,6 +478,76 @@ TEST_F(TcpApplicationTest, FailSendingMessageBeforeConnecting)
     {
         std::this_thread::sleep_for(CLIENT_STATE_POLL_INTERVAL);
     }
+}
+
+TEST_F(TcpApplicationClientTest, ReadLargeMessage)
+{
+    const size_t message_size = 8196;
+    const std::string message (8196, 'x');
+
+    bool is_rx_callback_activated = false;
+
+    std::binary_semaphore callback_semaphore(0);
+    std::binary_semaphore server_running_semaphore(0);
+    std::binary_semaphore server_shutdown_semaphore(0);
+    std::thread server_thread (&TcpApplicationClientTest::StartMessageSenderTcpServer, this, std::ref(server_running_semaphore), std::ref(server_shutdown_semaphore), message);
+
+    size_t bytes_received = 0;
+    std::string received_bytes;
+
+    m_client.SetRxCallback([&](const std::span<char>& rx_payload_view)
+    {
+        const std::string rx_payload (rx_payload_view.data(), rx_payload_view.size());
+
+        bytes_received += rx_payload.size();
+        received_bytes += rx_payload;
+
+        if(bytes_received == message.size())
+        {
+            // signal the gtest function body thread to resume
+            callback_semaphore.release();
+        }
+    });
+
+    EXPECT_TRUE(m_client.Start());
+
+    // Do not proceed until the client worker threads are ready to begin
+    while(not m_client.IsRunning())
+    {
+        std::this_thread::sleep_for(CLIENT_STATE_POLL_INTERVAL);
+    }
+
+    // wait here until the server is ready
+    server_running_semaphore.acquire();
+
+    EXPECT_TRUE(m_client.RequestOpen());
+
+    while(m_client.GetClientState() != ClientState::CONNECTED)
+    {
+        std::this_thread::sleep_for(CLIENT_STATE_POLL_INTERVAL);
+    }
+
+    EXPECT_EQ(m_client.GetClientState(), ClientState::CONNECTED);
+
+    // wait for the RX callback to be activated
+    callback_semaphore.acquire();
+
+    EXPECT_TRUE(m_client.RequestClose());
+
+    while(m_client.GetClientState() != ClientState::NOT_CONNECTED)
+    {
+        std::this_thread::sleep_for(CLIENT_STATE_POLL_INTERVAL);
+    }
+
+    EXPECT_EQ(m_client.GetClientState(), ClientState::NOT_CONNECTED);
+
+    // tell the server it can now shutdown
+    server_shutdown_semaphore.release();
+
+    server_thread.join();
+
+    EXPECT_EQ(message.size(), bytes_received);
+    EXPECT_EQ(message, received_bytes);
 }
 
 } // namespace InterProcessCommunication::Test

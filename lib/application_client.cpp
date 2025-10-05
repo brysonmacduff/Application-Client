@@ -197,7 +197,7 @@ void ApplicationClient::SignalRxWorkerThreadShutdown()
     SetRxWorkerThreadState(WorkerThreadState::ENDING);
 }
 
-void ApplicationClient::ExecuteErrorCallback(const Error &error, const std::optional<std::vector<char>> &tx_payload_opt)
+void ApplicationClient::ExecuteErrorCallback(const Error &error, const std::optional<std::span<char>> &tx_payload_opt)
 {
     std::lock_guard<std::mutex> lock(m_error_callback_mutex);
     m_error_callback(error, tx_payload_opt);
@@ -211,6 +211,10 @@ void ApplicationClient::SetClientState(const ClientState &client_state)
 
 bool ApplicationClient::OpenConnection()
 {
+    // Ensure the file descriptors are cleaned up before opening a connection
+    shutdown(m_client_file_descriptor, SHUT_RDWR);
+    close(m_client_file_descriptor);
+
     if(OpenSocket() && Connect())
     {
         SetClientState(ClientState::CONNECTED);
@@ -337,7 +341,7 @@ void ApplicationClient::CloseSocket()
     shutdown(m_client_file_descriptor, SHUT_RDWR);
     close(m_client_file_descriptor);
     SetClientState(ClientState::NOT_CONNECTED);
-    m_disconnected_callback();
+    m_disconnected_callback(false);
 }
 
 void ApplicationClient::MonitorConnection()
@@ -421,7 +425,7 @@ bool ApplicationClient::SendNextPayload()
         {
             const std::string error_message = std::string(CLASS_NAME) + "::" + __func__ + "() -> Failed to send payload!";
             perror(error_message.c_str());
-            ExecuteErrorCallback(Error::SOCKET_SEND_FAILURE, tx_payload);
+            ExecuteErrorCallback(Error::SOCKET_SEND_FAILURE, tx_payload_view);
             return false;
         }
 
@@ -451,10 +455,15 @@ void ApplicationClient::ProcessRxPayloads()
         }
 
         std::vector<char> rx_buffer(RX_BUFFER_SIZE);
-        std::span<char> rx_buffer_view(rx_buffer);
 
-        const ssize_t read_bytes = recv(m_client_file_descriptor, rx_buffer_view.data(), rx_buffer_view.size(),0);
+        const ssize_t read_bytes = recv(m_client_file_descriptor, rx_buffer.data(), rx_buffer.size(), 0);
 
+        if(read_bytes == 0)
+        {
+            // In this case, the connection has ended so signal that the disconnection has occured
+            m_disconnected_callback(true);
+            continue;
+        }
         if(read_bytes < 0)
         {
             const std::string error_message = std::string(CLASS_NAME) + "::" + __func__ + "() -> Failed to read!";
@@ -463,6 +472,8 @@ void ApplicationClient::ProcessRxPayloads()
 
             continue;
         }
+
+        const std::span<char> rx_buffer_view(rx_buffer.data(), read_bytes);
 
         m_rx_callback(rx_buffer_view);
     }
