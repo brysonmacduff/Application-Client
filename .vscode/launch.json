@@ -6,7 +6,7 @@
             "type": "cppdbg",
             "request": "launch",
             "program": "${workspaceFolder}/build/lib/test/application_client_test",
-            "args": [""],
+            "args": ["--gtest_filter=TcpApplicationClientTest.ReconnectAfterServerDisconnect"],
             "stopAtEntry": false,
             "cwd": "${fileDirname}",
             "environment": [],

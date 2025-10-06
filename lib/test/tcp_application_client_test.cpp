@@ -22,7 +22,7 @@ public:
     
     void StartConnectionAccepterTcpServer(std::binary_semaphore& server_running_semaphore, std::binary_semaphore& server_shutdown_semaphore, int connection_limit)
     {
-        const int m_server_file_descriptor = socket(AF_INET, SOCK_STREAM, 0);
+        m_server_file_descriptor = socket(AF_INET, SOCK_STREAM, 0);
         EXPECT_NE(m_server_file_descriptor, -1);
         sockaddr_in address{};
 
@@ -44,7 +44,7 @@ public:
 
         for(int count = 0; count < connection_limit; ++count)
         {
-            const int m_client_file_descriptor = accept(m_server_file_descriptor, nullptr, nullptr);
+            m_client_file_descriptor = accept(m_server_file_descriptor, nullptr, nullptr);
 
             EXPECT_NE(m_client_file_descriptor, -1);
 
@@ -63,7 +63,7 @@ public:
     void StartMessageReceiverTcpServer(std::binary_semaphore& server_running_semaphore, std::binary_semaphore& server_done_semaphore, std::binary_semaphore& server_shutdown_semaphore, std::string expected_payload)
     {
         const int connection_limit = 1;
-        const int m_server_file_descriptor = socket(AF_INET, SOCK_STREAM, 0);
+        m_server_file_descriptor = socket(AF_INET, SOCK_STREAM, 0);
         EXPECT_NE(m_server_file_descriptor, -1);
         sockaddr_in address{};
 
@@ -83,7 +83,7 @@ public:
 
         std::cout << "TCP_SERVER -> Server is listening for connection attempts...\n";
 
-        const int m_client_file_descriptor = accept(m_server_file_descriptor, nullptr, nullptr);
+        m_client_file_descriptor = accept(m_server_file_descriptor, nullptr, nullptr);
 
         EXPECT_NE(m_client_file_descriptor, -1);
 
@@ -124,7 +124,7 @@ public:
     void StartMessageSenderTcpServer(std::binary_semaphore& server_running_semaphore, std::binary_semaphore& server_shutdown_semaphore, std::string outbound_payload)
     {
         const int connection_limit = 1;
-        const int m_server_file_descriptor = socket(AF_INET, SOCK_STREAM, 0);
+        m_server_file_descriptor = socket(AF_INET, SOCK_STREAM, 0);
         EXPECT_NE(m_server_file_descriptor, -1);
         sockaddr_in address{};
 
@@ -144,7 +144,7 @@ public:
 
         std::cout << "TCP_SERVER -> Server is listening for connection attempts...\n";
 
-        const int m_client_file_descriptor = accept(m_server_file_descriptor, nullptr, nullptr);
+        m_client_file_descriptor = accept(m_server_file_descriptor, nullptr, nullptr);
 
         EXPECT_NE(m_client_file_descriptor, -1);
 
@@ -169,7 +169,7 @@ public:
         std::cout << "TCP_SERVER -> Server has shutdown.\n";
     }
 
-private:
+protected:
     int m_client_file_descriptor { -1 };
     int m_server_file_descriptor { -1 };
 };
@@ -548,6 +548,75 @@ TEST_F(TcpApplicationClientTest, ReadLargeMessage)
 
     EXPECT_EQ(message.size(), bytes_received);
     EXPECT_EQ(message, received_bytes);
+}
+
+TEST_F(TcpApplicationClientTest, ReconnectAfterServerDisconnect)
+{
+    const int connection_attempts = 2;
+    std::binary_semaphore server_running_semaphore(0);
+    std::binary_semaphore server_shutdown_semaphore(0);
+    std::thread server_thread (&TcpApplicationClientTest::StartConnectionAccepterTcpServer, this, std::ref(server_running_semaphore), std::ref(server_shutdown_semaphore), connection_attempts);
+
+    std::binary_semaphore callback_semaphore(0);
+    const int expected_disconnect_count = 2;
+    int disconnect_count = 0;
+
+    m_client.SetDisconnectedCallback([&]()
+    {
+        // This callback will be called when the client properly closes itself after the connection is severed from the server side. After this, request the client to open.
+        if(disconnect_count == 0)
+        {
+            EXPECT_TRUE(m_client.RequestOpen());
+            callback_semaphore.release();
+        }
+
+        ++disconnect_count;
+    });
+
+    EXPECT_TRUE(m_client.Start());
+
+    // Do not proceed until the client worker threads are ready to begin
+    while(not m_client.IsRunning())
+    {
+        std::this_thread::sleep_for(CLIENT_STATE_POLL_INTERVAL);
+    }
+
+    // wait here until the server is ready
+    server_running_semaphore.acquire();
+
+    // connect to the server for the first time
+    EXPECT_TRUE(m_client.RequestOpen());
+
+    while(m_client.GetClientState() != ClientState::CONNECTED)
+    {
+        std::this_thread::sleep_for(CLIENT_STATE_POLL_INTERVAL);
+    }
+
+    // After the client connects for the first time, sever the client connection by closing the client file descriptor from the server's side (the gtest)
+    shutdown(m_client_file_descriptor,SHUT_RDWR);
+    close(m_client_file_descriptor);
+
+    // wait for the client to react to the disconnection
+    callback_semaphore.acquire();
+
+    while(m_client.GetClientState() != ClientState::CONNECTED)
+    {
+        std::this_thread::sleep_for(CLIENT_STATE_POLL_INTERVAL);
+    }
+
+    EXPECT_TRUE(m_client.RequestClose());
+
+    while(m_client.GetClientState() != ClientState::NOT_CONNECTED)
+    {
+        std::this_thread::sleep_for(CLIENT_STATE_POLL_INTERVAL);
+    }
+
+    // tell the server it can now shutdown
+    server_shutdown_semaphore.release();
+
+    server_thread.join();
+
+    EXPECT_EQ(disconnect_count, expected_disconnect_count);
 }
 
 } // namespace InterProcessCommunication::Test

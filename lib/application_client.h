@@ -37,7 +37,7 @@ enum class Error
 
 using ErrorCallback = std::function<void(const Error& error, const std::optional<std::span<char>>& failed_tx_payload)>;
 using ConnectedCallback = std::function<void()>;
-using DisconnectedCallback = std::function<void(bool disconnected_by_server)>;
+using DisconnectedCallback = std::function<void()>;
 using RxCallback = std::function<void(const std::span<char>& rx_bytes)>;
 
 class ApplicationClient
@@ -112,7 +112,8 @@ private:
     std::list<std::vector<char>> m_tx_queue;
     std::mutex m_tx_queue_mutex;
     ConnectedCallback m_connected_callback = [](){};
-    DisconnectedCallback m_disconnected_callback = [](bool disconnected_by_server){};
+    DisconnectedCallback m_disconnected_callback = [](){};
+    std::mutex m_disconnected_callback_mutex;
     RxCallback m_rx_callback = [](const std::span<char>& rx_bytes){(void)rx_bytes;};
     ErrorCallback m_error_callback = [](const Error& error, const std::optional<std::span<char>>& failed_tx_payload){(void)error; (void)failed_tx_payload;};
     std::mutex m_error_callback_mutex;
@@ -147,6 +148,7 @@ private:
     void SignalRxWorkerThreadShutdown();
 
     void ExecuteErrorCallback(const Error& error, const std::optional<std::span<char>>& tx_payload_opt);
+    void ExecuteDisconnectedCallback();
 
     void SetClientState(const ClientState& client_state);
     bool OpenConnection();
