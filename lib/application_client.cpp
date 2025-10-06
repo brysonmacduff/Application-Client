@@ -197,10 +197,16 @@ void ApplicationClient::SignalRxWorkerThreadShutdown()
     SetRxWorkerThreadState(WorkerThreadState::ENDING);
 }
 
-void ApplicationClient::ExecuteErrorCallback(const Error &error, const std::optional<std::vector<char>> &tx_payload_opt)
+void ApplicationClient::ExecuteErrorCallback(const Error &error, const std::optional<std::span<char>> &tx_payload_opt)
 {
     std::lock_guard<std::mutex> lock(m_error_callback_mutex);
     m_error_callback(error, tx_payload_opt);
+}
+
+void ApplicationClient::ExecuteDisconnectedCallback()
+{
+    std::lock_guard<std::mutex> lock(m_disconnected_callback_mutex);
+    m_disconnected_callback();
 }
 
 void ApplicationClient::SetClientState(const ClientState &client_state)
@@ -211,6 +217,10 @@ void ApplicationClient::SetClientState(const ClientState &client_state)
 
 bool ApplicationClient::OpenConnection()
 {
+    // Ensure the file descriptors are cleaned up before opening a connection
+    shutdown(m_client_file_descriptor, SHUT_RDWR);
+    close(m_client_file_descriptor);
+
     if(OpenSocket() && Connect())
     {
         SetClientState(ClientState::CONNECTED);
@@ -337,7 +347,6 @@ void ApplicationClient::CloseSocket()
     shutdown(m_client_file_descriptor, SHUT_RDWR);
     close(m_client_file_descriptor);
     SetClientState(ClientState::NOT_CONNECTED);
-    m_disconnected_callback();
 }
 
 void ApplicationClient::MonitorConnection()
@@ -371,6 +380,7 @@ void ApplicationClient::MonitorConnection()
         else if(GetClientState() == ClientState::CLOSING)
         {
             CloseSocket();
+            ExecuteDisconnectedCallback();
         }
     }
 
@@ -421,7 +431,7 @@ bool ApplicationClient::SendNextPayload()
         {
             const std::string error_message = std::string(CLASS_NAME) + "::" + __func__ + "() -> Failed to send payload!";
             perror(error_message.c_str());
-            ExecuteErrorCallback(Error::SOCKET_SEND_FAILURE, tx_payload);
+            ExecuteErrorCallback(Error::SOCKET_SEND_FAILURE, tx_payload_view);
             return false;
         }
 
@@ -451,20 +461,33 @@ void ApplicationClient::ProcessRxPayloads()
         }
 
         std::vector<char> rx_buffer(RX_BUFFER_SIZE);
-        std::span<char> rx_buffer_view(rx_buffer);
 
-        const ssize_t read_bytes = recv(m_client_file_descriptor, rx_buffer_view.data(), rx_buffer_view.size(),0);
+        const ssize_t read_bytes = recv(m_client_file_descriptor, rx_buffer.data(), rx_buffer.size(), 0);
 
-        if(read_bytes < 0)
+        // The server closed the connection in this case
+        if(read_bytes == 0)
+        {
+            // If the connection was closed by the server and the client still thinks it is in the connected state, then take action to clean up the socket on the client's side
+            if(GetClientState() == ClientState::CONNECTED)
+            {
+                // In this case, the connection has ended so instruct the state machine to close and clean up the socket properly and transition to the not-connected state
+                CloseSocket();
+                ExecuteDisconnectedCallback();
+            }
+        }
+        // An error occured while reading
+        else if(read_bytes < 0)
         {
             const std::string error_message = std::string(CLASS_NAME) + "::" + __func__ + "() -> Failed to read!";
             perror(error_message.c_str());
             ExecuteErrorCallback(Error::SOCKET_READ_FAILURE, std::nullopt);
-
-            continue;
         }
-
-        m_rx_callback(rx_buffer_view);
+        // Message data was received from the socket
+        else
+        {
+            const std::span<char> rx_buffer_view(rx_buffer.data(), read_bytes);
+            m_rx_callback(rx_buffer_view);
+        }
     }
 
     SetRxWorkerThreadState(WorkerThreadState::INACTIVE);
